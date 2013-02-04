@@ -5,15 +5,16 @@
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin:/boot/usr/sbin
 
 error() {
-	echo "Error detected, bailing out..." >&2	
+	echo "*** Error detected, bailing out... ***" >&2	
 	cd /
 	sync	
 	umount -a
 	sync
-	sleep 10
+	sleep 8
 	reboot
 }
 
+echo 96 > /sys/class/leds/lcd-backlight/brightness
 echo 3 > /proc/sys/kernel/printk
 echo '**** SmackMe version 2.0 ****'
 echo
@@ -23,8 +24,10 @@ for script in /etc/scripts/*.sh; do
 	source $script
 done
 
-mkdir -p /mnt
 mount -t tmpfs none /tmp
+# for Android extraction.
+mkdir -p /mnt
+mount -t tmpfs none /mnt
 
 echo "Mounting boot partition"
 mkdir -p /boot
@@ -37,8 +40,7 @@ echo "Mounting media LV"
 mkdir /media
 mount -t vfat /dev/store/media /media 2>&1 >/dev/null
 
-if [ ! -d /media/sminstall ]
-then 
+if [ ! -d /media/sminstall ]; then 	
 	echo >&2
 	echo "You should've created a directory under your media volume called"
 	echo "'sminstall', and put (at a minimum) one ZIP file with your chosen"
@@ -66,7 +68,7 @@ mkdir -p /media/sminstall/invalid
 mkdir -p /media/sminstall/kern/orig
 mkdir -p /media/sminstall/kern/modded
 
-[ -f /media/sminstall/debugmode ] || export SM_DEBUG=$(cat /media/sminstall/debugmode)
+[ -f /media/sminstall/debugmode ] && . /media/sminstall/debugmode
 
 if [ ! -z "$SM_DEBUG" ]; then
 	echo "Debug mode enabled..." >&2
@@ -74,8 +76,6 @@ if [ ! -z "$SM_DEBUG" ]; then
 fi
 
 echo "" >&2
-
-NTRIES=1
 
 if [ -e /dev/store/cm-system -a -z "$SM_DEBUG" ]; then
 	echo "Android is already installed in the ACME installer way." >&2
@@ -86,6 +86,12 @@ fi
 rm -f /boot/uImage.ClockworkMod
 rm -f /boot/uImage.TWRP
 rm -f /boot/update-uimage
+
+echo yes > /boot/moboot.verbose.kexec
+echo yes > /boot/moboot.verbose.Ubuntu
+echo yes > /boot/moboot.verbose.ArchLinuxARM
+echo yes > /boot/moboot.verbose.Slackware
+echo yes > /boot/moboot.verbose.Fedora
 
 echo "Phase One: Determining media partition shrinkage" >&2
 shrinkage=0
@@ -140,18 +146,22 @@ for infile in /media/sminstall/*; do
 	esac
 	# check for the mentioned volume.
 	[ -e /dev/store/$lvname ] || shrinkage=$(($shrinkage + $addsize))
-done
+done &&
 
+freespc=$(lvm.static vgs -o free --units m store | tail -n 1)
+# chomp decimal and unit.
+freespc=${freespc%.??M}
+
+echo "free VG space = ${freespc}MiB" >&2
 echo "shrinkage = ${shrinkage}MiB" >&2
 echo >&2
 
 cursize=$(lvm.static lvdisplay -c store/media | awk -F: '{print $7/2048}')
-echo "cursize = ${cursize}M" >&2
+echo "current MEDIA size = ${cursize}M" >&2
 
 # Make sure to leave safety room.
-newsize=$(($cursize - $shrinkage - 8))
-if [ $newsize -lt 0 ]
-then
+newsize=$(($cursize + $freespc - $shrinkage - 8))
+if [ $newsize -lt 0 ]; then
 	echo "You don't have enough space on your internal flash to install" >&2
 	echo "these OSes!" >&2
 	echo "Note that this doesn't mean 'delete files', this means to get" >&2
@@ -163,117 +173,106 @@ echo "newsize = ${newsize}M" >&2
 echo "unmounting media" >&2
 umount /media
 
-if [ ! -z "$SM_DEBUG" ]; then
-	echo -n "shrinking media filesystem: " >&2
-	LD_LIBRARY_PATH=/webos/usr/lib /webos/bin/resizefat /dev/store/media ${NEWSIZE}M 
+if [ -z "$SM_DEBUG" -a \( $newsize -ne $cursize \) ]; then
+	echo "shrinking media filesystem: " >&2
+	LD_LIBRARY_PATH=/webos/usr/lib /webos/bin/resizefat /dev/store/media ${newsize}M 
 	if [ $? -gt 0 ]
 	then
 		echo "Failed to shrink the FAT filesystem." >&2
 		echo "You might have too much data stored on it." >&2
 		error
 	fi
-	echo "OK" >&2
 
-	echo -n "shrinking media logical volume: " >&2
-	lvm.static lvresize -fL ${NEWSIZE}M  /dev/store/media 
-	if [ $? -gt 0 ]
-	then
+	echo "shrinking media logical volume: " >&2
+	lvm.static lvresize -fL ${newsize}M  /dev/store/media 
+	if [ $? -gt 0 ]; then
 		echo "Failed to shrink the logical volume." >&2
-		umount -a
-		sleep 15
-		rebootzimage
-	fi
-	echo "OK" >&2
-fi
-
-echo -n "remounting media partition: " &>2
-mount -t vfat /dev/store/media /media
-echo "OK" >&2
-
-files=$(ls -p /media/sminstall/* 2> /dev/null | sed -e /log$/d -e /debugmode$/d | grep -cv '/$' )
-
-echo "$files files found." >&2
-echo >&2
-
-while [ "$files" -gt 0 ]; do
-	if [ $NTRIES -gt 3 ]; then
-		echo "BUG - Breaking out of seemingly infinite file loop." >&2
 		error
 	fi
+fi
+
+echo "remounting media partition: " &>2
+mount -t vfat /dev/store/media /media
+
+files=$(ls -p /media/sminstall/* 2> /dev/null | sed -e /log$/d -e /debugmode$/d | grep -cv '/$' )
+echo >&2
+
+pass=1
+while [ $pass -lt 4 ]; do
+	echo "Install Pass $pass." >&2
 
 	for infile in /media/sminstall/*; do
 		bname="`basename $infile`"
 
 		[ -d $infile -o $bname = "debugmode" ] && continue
 	
-		echo "file: $bname" >&2
-
 		# Classify the file, to find out what we need to do.
-		if [ ! -z "$SM_DEBUG" ]; then
+		if [ -z "$SM_DEBUG" ]; then
 			valid=1
-
-			case $bname in
-			TouchPadBuntuRootfs*.tar.gz|TouchPadBuntuRootfs*.tgz ) install_native $infile ubuntu 3072 ;;
-			ArchLinuxARM-touchpad*.tar.gz|ArchLinuxARM-touchpad*.tgz ) install_native $infile arch 3072 ;;
-			bodhi-touchpad-*.tar.gz|bodhi-touchpad-*.tgz ) install_native $infile debian 2048 ;;
-			HPTPFedora*.tar.gz|HPTPFedora*.tar.gz ) install_native $infile fedora 2560 ;;
-			HPTPSlackware*.tar.gz|HPTPSlackware*.tar.gz ) install_native $infile slackware 2048 ;;
-
-			kexec-*.tar ) install_kexec $infile ;;
-			uImage.* ) install_uimage $infile ;;
-
-			Froyo-*.zip|froyo-*.zip ) install_android $infile android22 250 450 200 ;;
-			update-cm-7*.zip|update-cm7*.zip|cm-7*.zip ) install_android $infile android23 300 500 200 ;; 
-			update-cm-9*.zip|cm-9*.zip|update-cm9*.zip ) install_android $infile android40 300 750 200 ;; 
-			cm-10*.zip|update-cm-10*.zip|update-cm10*.zip ) install_android $infile android41 450 750 200 ;; 
-			Evervolv-*.zip|evervolv-*.zip ) install_android $infile android42 450 750 200 ;; 
-
-			gapps-mdpi*.zip ) install_gapps $infile froyo ;;
-			gapps-gb*.zip ) install_gapps $infile cm7 ;;
-			gapps-ics*.zip ) install_gapps $infile cm9 ;;
-			gapps-jb-20120*.zip|gapps-jb-201210*.zip ) install_gapps $infile cm10 ;;
-			gapps-jb-*.zip ) install_gapps $infile jbmr1 ;;
-
-			moboot*.zip ) install_moboot $infile ;;
-
-			update-cwm*.zip|openrecovery*.zip )
-				echo "$BNAME is a ZIP file containing Android recovery. I'm not dealing with that." >&2
-				echo "In fact, CWM/TWRP won't work with multibooted Android installs." >&2
-				echo "Always use SmackMe to install OSes in a multi-boot environment." >&2
-				echo "Moving it to the invalid directory." >&2
-				mv $infile /media/sminstall/invalid	
-				continue
+			case $pass in
+			1 ) case $bname in
+				moboot*.zip ) install_moboot $infile ;;
+				update-cwm*.zip|openrecovery*.zip )
+					echo "$BNAME is a ZIP file containing Android recovery. I'm not dealing with that." >&2
+					echo "In fact, CWM/TWRP won't work with multibooted Android installs." >&2
+					echo "Always use SmackMe to install OSes in a multi-boot environment." >&2
+					echo "Moving it to the invalid directory." >&2
+					mv $infile /media/sminstall/invalid	
+					continue
+					;;
+				* ) echo -n "Deferring file: $bname." >&2
+					valid=0
+					;;
+				esac
 				;;
-			* )
-				valid=0
+
+			2 ) case $bname in
+				TouchPadBuntuRootfs*.tar.gz|TouchPadBuntuRootfs*.tgz ) install_native $infile ubuntu 3072 ;;
+				ArchLinuxARM-touchpad*.tar.gz|ArchLinuxARM-touchpad*.tgz ) install_native $infile arch 3072 ;;
+				bodhi-touchpad-*.tar.gz|bodhi-touchpad-*.tgz ) install_native $infile debian 2048 ;;
+				HPTPFedora*.tar.gz|HPTPFedora*.tar.gz ) install_native $infile fedora 2560 ;;
+				HPTPSlackware*.tar.gz|HPTPSlackware*.tar.gz ) install_native $infile slackware 2048 ;;
+
+				Froyo-*.zip|froyo-*.zip ) install_android $infile android22 250 450 200 ;;
+				update-cm-7*.zip|update-cm7*.zip|cm-7*.zip ) install_android $infile android23 300 500 200 ;; 
+				update-cm-9*.zip|cm-9*.zip|update-cm9*.zip ) install_android $infile android40 300 750 200 ;; 
+				cm-10*.zip|update-cm-10*.zip|update-cm10*.zip ) install_android $infile android41 450 750 200 ;; 
+				Evervolv-*.zip|evervolv-*.zip ) install_android $infile android42 450 750 200 ;; 
+
+				uImage.* ) install_uimage $infile ;;
+				* ) echo -n "Deferring file: $bname." >&2
+					valid=0 
+					;;
+				esac
+				;;
+
+			3 ) case $bname in
+				kexec-*.tar ) install_kexec $infile ;;
+				gapps-mdpi*.zip ) install_gapps $infile android22 ;;
+				gapps-gb*.zip ) install_gapps $infile android23 ;;
+				gapps-ics*.zip ) install_gapps $infile android40 ;;
+				gapps-jb-20120*.zip|gapps-jb-201210*.zip ) install_gapps $infile android41 ;;
+				gapps-jb-*.zip ) install_gapps $infile android42 ;;
+				* )	echo "File $bname wasn't recognized in $pass passes. Invalidating..." >&2
+					mv $infile /media/sminstall/invalid/
+					;;								
+				esac
 				;;
 			esac
 		fi
 
-		if [ $? -ne 3 ]; then		
-			mkdir -p /media/sminstall/finished
-			if [ ! -z "$valid" ]; then
-				echo "moving to finished directory" >&2
-				mv $infile /media/sminstall/finished
-			fi
-		elif [ $? -gt 0 ]; then
-			error
+		mkdir -p /media/sminstall/finished
+		if [ "$valid" -eq 1 ]; then
+			echo "$bname: moving to finished directory" >&2
+			mv $infile /media/sminstall/finished/
 		fi
-		[ -z "$SM_DEBUG" ] && sleep 3
+
+		echo >&2
+		[ ! -z "$SM_DEBUG" ] && sleep 1
 	done # each file.
 
-	# To prevent "infinite file loops" b/c debug mode doesn't move files to
-	# finished dir.
-	[ -z "$SM_DEBUG" ] && break
-
-	files=$(ls -p /media/sminstall/* 2> /dev/null | sed -e /log$/d -e /debugmode$/d | grep -cv '/$' )
-	[ "$files" != "0" ] && NTRIES=$((NTRIES + 1))
-	echo "$files files remaining" >&2
+	pass=$(($pass + 1))
 done # as long as there are files.
- 
-rm -f /boot/uImage.ClockworkMod*
-rm -f /boot/uImage.TWRP*
-rm -f /boot/update-uimage
 
 exec 1>&-
 
@@ -282,12 +281,12 @@ exec 1>&-
 cp /tmp/log /media/sminstall/log
 
 sync
-umount -a
+umount -a 2>/dev/null
 sync
 sync
 
 echo "Finished." >&2
-[ -z "$SM_DEBUG" ] && sleep 5
+[ ! -z "$SM_DEBUG" ] && sleep 5
 sleep 5
 
 echo "Rebooting." >&2

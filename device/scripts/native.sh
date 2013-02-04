@@ -7,12 +7,20 @@
 # $2: LV name
 # $3: LV size
 install_native() {
-	lvm.static lvcreate -n $2-root -L $3 store
-	mkfs.ext3 /dev/store/$2
-	mkdir /mnt/$2
-	mount -t ext4 /dev/store/$2-root /$2/ubuntu
+	if [ ! -e /dev/store/$2-root ]; then
+		echo "Creating root logical volume for $2." >&2
+		lvm.static lvcreate -n $2-root -L ${3}M store
+	fi
 
-	echo "extracting $2 tarchive" >&2
-	tar -C /mnt/$2 -xzf $1
+	echo "Formatting root filesystem for $2." >&2
+	mkfs.ext3 /dev/store/$2-root 2>/dev/null
+	mkdir /mnt/$2
+	mount -t ext4 /dev/store/$2-root /mnt/$2
+	echo "Complete." >&2
+
+	echo "Extracting $2 tarchive. This may take upwards of 10 minutes." >&2
+	echo "Please wait..." >&2
+	gunzip -c $1 | tar -C /mnt/$2 -x 
+	echo "Extraction complete." >&2
 }
 

@@ -26,6 +26,7 @@ sudo chmod 755 ext/etc/init.d/S99smackme
 sudo mkdir -p ext/etc/scripts
 sudo cp scripts/*.sh ext/etc/scripts/
 sudo chmod 755 ext/etc/scripts/*
+sudo cp bin/* ext/bin/
 
 sudo umount ramdisk
 rm -f ramdisk.lzma
