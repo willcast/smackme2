@@ -112,7 +112,7 @@ for infile in /media/sminstall/*; do
 			lvname=arch-root
 			;;
 		bodhi-touchpad-*.tar.gz|bodhi-touchpad-*.tgz )
-			addsize=2048
+			addsize=2560
 			luvname=debian-root
 			;;
 		HPTPFedora*.tar.gz|HPTPFedora*.tar.gz )
@@ -120,7 +120,7 @@ for infile in /media/sminstall/*; do
 			lvname=fedora-root
 			;;
 		HPTPSlack*.tar.gz|HPTPSlack*.tgz )
-			addsize=2048
+			addsize=2304
 			lvname=slackware-root
 			;;
 		Froyo-*.zip|froyo-*.zip )
@@ -146,10 +146,11 @@ for infile in /media/sminstall/*; do
 	esac
 	# check for the mentioned volume.
 	[ -e /dev/store/$lvname ] || shrinkage=$(($shrinkage + $addsize))
-done &&
+done
 
 freespc=$(lvm.static vgs -o free --units m store | tail -n 1)
 # chomp decimal and unit.
+[ freespc = '0M' ] && freespc=0
 freespc=${freespc%.??M}
 
 echo "free VG space = ${freespc}MiB" >&2
@@ -228,10 +229,19 @@ while [ $pass -lt 4 ]; do
 
 			2 ) case $bname in
 				TouchPadBuntuRootfs*.tar.gz|TouchPadBuntuRootfs*.tgz ) install_native $infile ubuntu 3072 ;;
-				ArchLinuxARM-touchpad*.tar.gz|ArchLinuxARM-touchpad*.tgz ) install_native $infile arch 3072 ;;
-				bodhi-touchpad-*.tar.gz|bodhi-touchpad-*.tgz ) install_native $infile debian 2048 ;;
+				TouchPadBuntuRootfs*.tar.gz.1|TouchPadBuntuRootfs*.tgz.1 ) unsplit_native $infile ubuntu 3072 ;;
+
 				HPTPFedora*.tar.gz|HPTPFedora*.tar.gz ) install_native $infile fedora 2560 ;;
-				HPTPSlackware*.tar.gz|HPTPSlackware*.tar.gz ) install_native $infile slackware 2048 ;;
+				HPTPFedora*.tar.gz.1|HPTPFedora*.tar.gz.1 ) unsplit_native $infile fedora 2560 ;;
+
+				HPTPSlackware*.tar.gz|HPTPSlackware*.tar.gz ) install_native $infile slackware 2304 ;;
+				HPTPSlackware*.tar.gz.1|HPTPSlackware*.tar.gz.1 ) unsplit_native $infile slackware 2304 ;;
+
+				ArchLinuxARM-touchpad*.tar.gz|ArchLinuxARM-touchpad*.tgz ) install_native $infile arch 3072 ;;
+				ArchLinuxARM-touchpad*.tar.gz.1|ArchLinuxARM-touchpad*.tgz.1 ) unsplit_native $infile arch 3072 ;;
+
+				bodhi-touchpad-*.tar.gz|bodhi-touchpad-*.tgz ) install_native $infile debian 2560 ;;
+				bodhi-touchpad-*.tar.gz.1|bodhi-touchpad-*.tgz.1 ) unsplit_native $infile debian 2560 ;;
 
 				Froyo-*.zip|froyo-*.zip ) install_android $infile android22 250 450 200 ;;
 				update-cm-7*.zip|update-cm7*.zip|cm-7*.zip ) install_android $infile android23 300 500 200 ;; 
