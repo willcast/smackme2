@@ -148,10 +148,14 @@ for infile in /media/sminstall/*; do
 	[ -e /dev/store/$lvname ] || shrinkage=$(($shrinkage + $addsize))
 done
 
-freespc=$(lvm.static vgs -o free --units m store | tail -n 1)
+freespc=$(lvm.static vgs -o free --units m store | tail -n 1 | awk '{print $1}')
+
 # chomp decimal and unit.
-[ freespc = '0M' ] && freespc=0
-freespc=${freespc%.??M}
+if [ "$freespc" = '0M' ]; then 
+	freespc=0
+else
+	freespc=${freespc%.??M}
+fi
 
 echo "free VG space = ${freespc}MiB" >&2
 echo "shrinkage = ${shrinkage}MiB" >&2

@@ -45,4 +45,5 @@ unsplit_native() {
 	cat $partname.* | gunzip -c | tar -C /mnt/$2 -x 
 
 	echo "Extraction complete." >&2
+	rm -f $partname.[23456789]*
 }
